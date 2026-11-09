@@ -1,0 +1,29 @@
+id: cert-renewal-failing
+title: TLS certificate renewal failing
+description: >
+  shop-tls expires in two days. cert-manager's ACME challenge keeps failing,
+  so renewal never completes.
+expected:
+  cause_category: certificate_expiry
+  evidence_keywords: ["renew", "expires"]
+alerts:
+  - labels: {alertname: CertificateExpiringSoon, namespace: shop, name: shop-tls, severity: warning}
+    annotations: {summary: "Certificate shop/shop-tls expires in less than 7 days"}
+    expr: '(certmanager_certificate_expiration_timestamp_seconds{namespace="shop"} - time()) < 7 * 86400'
+    fingerprint: 5a6b7c8d9e0f1a2b
+    starts_offset_seconds: -600
+fixtures:
+  prometheus:
+    - match: 'certmanager_certificate_expiration'
+      series:
+        - labels: {name: shop-tls, namespace: shop}
+          values: [[-3600, 176400], [0, 172800]]
+  loki:
+    - match: 'namespace="shop"'
+      lines:
+        - {offset: -1200, pod: "", line: "level=error msg=\"Failed to renew certificate shop/shop-tls\" err=\"ACME challenge for shop.example.com failed: 403 urn:ietf:params:acme:error:unauthorized\""}
+  kubernetes:
+    events:
+      shop:
+        - {type: Warning, reason: Failed, object: Challenge/shop-tls-2xk9d, message: "Accepting challenge authorization failed: acme: authorization error for shop.example.com: 403", offset: -1250}
+        - {type: Warning, reason: Failed, object: Certificate/shop-tls, message: "Failed to renew certificate shop-tls; certificate expires in 2d", offset: -1190}

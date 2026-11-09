@@ -1,0 +1,28 @@
+id: pvc-disk-full
+title: Database volume full
+description: >
+  The Postgres data volume reaches 98% and WAL writes fail.
+expected:
+  cause_category: disk_pressure
+  evidence_keywords: ["No space left on device"]
+alerts:
+  - labels: {alertname: KubePersistentVolumeFillingUp, namespace: data, persistentvolumeclaim: pgdata-postgres-0, severity: critical}
+    annotations: {summary: "PVC data/pgdata-postgres-0 is 98% full"}
+    expr: 'kubelet_volume_stats_available_bytes{namespace="data"} / kubelet_volume_stats_capacity_bytes{namespace="data"} < 0.03'
+    fingerprint: 8c9d0e1f2a3b4c5d
+    starts_offset_seconds: -240
+fixtures:
+  prometheus:
+    - match: 'kubelet_volume_stats'
+      series:
+        - labels: {persistentvolumeclaim: pgdata-postgres-0}
+          values: [[-3600, 0.11], [-1800, 0.06], [-600, 0.03], [0, 0.02]]
+  loki:
+    - match: 'namespace="data"'
+      lines:
+        - {offset: -300, pod: postgres-0, line: "FATAL: could not write to file \"pg_wal/xlogtemp.218\": No space left on device"}
+        - {offset: -120, pod: postgres-0, line: "LOG: database system is shut down"}
+  kubernetes:
+    events:
+      data:
+        - {type: Warning, reason: Unhealthy, object: Pod/postgres-0, message: "Liveness probe failed: could not connect to server", offset: -100}

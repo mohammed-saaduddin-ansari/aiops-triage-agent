@@ -1,0 +1,32 @@
+id: dns-resolution-failure
+title: Errors from DNS resolution failures
+description: >
+  notifications fails to send email because the SMTP relay's name no longer
+  resolves inside the cluster.
+expected:
+  cause_category: network
+  evidence_keywords: ["no such host", "lookup"]
+alerts:
+  - labels: {alertname: HighErrorRate, namespace: shop, app: notifications, severity: warning}
+    annotations: {summary: "notifications 5xx ratio above 5% for 5m"}
+    expr: 'sum(rate(http_requests_total{namespace="shop",app="notifications",code=~"5.."}[5m])) / sum(rate(http_requests_total{namespace="shop",app="notifications"}[5m])) > 0.05'
+    fingerprint: 3d4e5f6a7b8c9d0e
+    starts_offset_seconds: -180
+fixtures:
+  prometheus:
+    - match: 'http_requests_total'
+      series:
+        - labels: {}
+          values: [[-3600, 0.0], [-900, 0.0], [-600, 0.44], [0, 0.47]]
+  loki:
+    - match: 'app="notifications"'
+      lines:
+        - {offset: -590, pod: notifications-7b8b9c2d4f-k8j7h, line: "level=error msg=\"send failed\" err=\"dial tcp: lookup smtp-relay.mail.svc.cluster.local on 10.96.0.10:53: no such host\""}
+        - {offset: -200, pod: notifications-7b8b9c2d4f-k8j7h, line: "level=error msg=\"POST /v1/notify 502\""}
+  kubernetes:
+    events:
+      shop: []
+    rollouts:
+      shop/notifications:
+        - {revision: 9, replicaset: notifications-6f7a8b9c0d, images: ["registry.example.com/notifications:2.0.0"], replicas: 0, ready: 0, offset_minutes: -50000}
+        - {revision: 10, replicaset: notifications-7b8b9c2d4f, images: ["registry.example.com/notifications:2.0.1"], replicas: 2, ready: 2, offset_minutes: -14400}

@@ -1,0 +1,37 @@
+id: cpu-throttling-latency
+title: Latency from CPU throttling under load
+description: >
+  gateway p99 latency breaches its SLO during a traffic peak. Pods are heavily
+  CPU-throttled and the request queue is full; nothing was deployed recently.
+expected:
+  cause_category: capacity_saturation
+  evidence_keywords: ["queue full", "max", "throttl"]
+alerts:
+  - labels: {alertname: HighLatencyP99, namespace: edge, app: gateway, severity: warning}
+    annotations: {summary: "gateway p99 latency above 750ms for 10m"}
+    expr: 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="edge",app="gateway"}[5m]))) > 0.75'
+    fingerprint: 7d6c5b4a39281706
+    starts_offset_seconds: -300
+fixtures:
+  prometheus:
+    - match: 'container_cpu_cfs_throttled'
+      series:
+        - labels: {}
+          values: [[0, 0.62]]
+    - match: 'histogram_quantile'
+      series:
+        - labels: {}
+          values: [[-3600, 0.21], [-2400, 0.24], [-1200, 0.48], [-600, 0.91], [-300, 1.12], [0, 1.18]]
+  loki:
+    - match: 'app="gateway"'
+      lines:
+        - {offset: -700, pod: gateway-5f6d7d8c9b-x2s4d, line: "WARN upstream request queue full (depth=512), shedding load"}
+        - {offset: -400, pod: gateway-5f6d7d8c9b-f4g5h, line: "WARN upstream request queue full (depth=512), shedding load"}
+  kubernetes:
+    events:
+      edge:
+        - {type: Warning, reason: ScalingLimited, object: HorizontalPodAutoscaler/gateway, message: "the desired replica count is more than the maximum replica count; HPA reached max replicas (10)", offset: -900}
+    rollouts:
+      edge/gateway:
+        - {revision: 18, replicaset: gateway-4e5d6c7b8a, images: ["registry.example.com/gateway:1.12.0"], replicas: 0, ready: 0, offset_minutes: -43200}
+        - {revision: 19, replicaset: gateway-5f6d7d8c9b, images: ["registry.example.com/gateway:1.12.1"], replicas: 10, ready: 10, offset_minutes: -10080}

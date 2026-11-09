@@ -1,0 +1,37 @@
+id: db-dependency-down
+title: Errors caused by a failing database
+description: >
+  checkout returns 500s because its Postgres dependency refuses connections.
+  checkout itself has not changed for three days.
+expected:
+  cause_category: dependency_failure
+  evidence_keywords: ["Connection refused", "orders-db"]
+alerts:
+  - labels: {alertname: HighErrorRate, namespace: shop, app: checkout, severity: critical}
+    annotations: {summary: "checkout 5xx ratio above 5% for 5m"}
+    expr: 'sum(rate(http_requests_total{namespace="shop",app="checkout",code=~"5.."}[5m])) / sum(rate(http_requests_total{namespace="shop",app="checkout"}[5m])) > 0.05'
+    fingerprint: 1f2e3d4c5b6a7980
+    starts_offset_seconds: -200
+fixtures:
+  prometheus:
+    - match: 'sum by \(version\)'
+      series:
+        - labels: {version: "4.8.0"}
+          values: [[0, 0.34]]
+    - match: 'http_requests_total'
+      series:
+        - labels: {}
+          values: [[-3600, 0.002], [-1200, 0.002], [-600, 0.21], [-300, 0.33], [0, 0.34]]
+  loki:
+    - match: 'app="checkout"'
+      lines:
+        - {offset: -590, pod: checkout-6b5c4d2f9x-r4t5v, line: "ERROR db: psycopg.OperationalError: connection to server at \"orders-db.shop.svc\" (10.0.3.12), port 5432 failed: Connection refused"}
+        - {offset: -320, pod: checkout-6b5c4d2f9x-w6k7m, line: "ERROR POST /api/checkout 500: could not obtain connection from pool (orders-db)"}
+  kubernetes:
+    events:
+      shop:
+        - {type: Warning, reason: Unhealthy, object: Pod/orders-db-0, message: "Readiness probe failed: pg_isready: no response", count: 14, offset: -560}
+    rollouts:
+      shop/checkout:
+        - {revision: 55, replicaset: checkout-5a4b3c2d1e, images: ["registry.example.com/checkout:4.7.3"], replicas: 0, ready: 0, offset_minutes: -21600}
+        - {revision: 56, replicaset: checkout-6b5c4d2f9x, images: ["registry.example.com/checkout:4.8.0"], replicas: 4, ready: 4, offset_minutes: -4320}

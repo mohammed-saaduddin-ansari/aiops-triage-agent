@@ -1,0 +1,25 @@
+id: node-not-ready
+title: Node NotReady
+description: >
+  worker-3 stops reporting; the kubelet has stopped posting node status.
+expected:
+  cause_category: node_failure
+  evidence_keywords: ["NodeNotReady", "Kubelet stopped posting"]
+alerts:
+  - labels: {alertname: KubeNodeNotReady, node: worker-3, severity: critical}
+    annotations: {summary: "worker-3 has been unready for more than 5 minutes"}
+    expr: 'kube_node_status_condition{job="kube-state-metrics",condition="Ready",status="true"} == 0'
+    fingerprint: 2b3c4d5e6f708192
+    starts_offset_seconds: -360
+fixtures:
+  prometheus:
+    - match: 'kube_node_status_condition'
+      series:
+        - labels: {node: worker-3, condition: Ready, status: "true"}
+          values: [[-3600, 1], [-900, 1], [-720, 0], [-360, 0], [0, 0]]
+  kubernetes:
+    events:
+      default:
+        - {type: Normal, reason: NodeNotReady, object: Node/worker-3, message: "Node worker-3 status is now: NodeNotReady", offset: -700}
+        - {type: Warning, reason: NodeStatusUnknown, object: Node/worker-3, message: "Kubelet stopped posting node status.", offset: -690}
+        - {type: Warning, reason: TaintManagerEviction, object: Node/worker-3, message: "Marking for deletion Pod shop/cart-7f9c6d5b8d-v8m2x", offset: -400}

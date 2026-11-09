@@ -1,0 +1,50 @@
+id: crashloop-missing-config
+title: Crash loop from a missing configuration key
+description: >
+  ledger restarts in a loop. Nothing was deployed for nine days; a ConfigMap
+  edit removed LEDGER_DB_URL and the process exits on start.
+expected:
+  cause_category: config_error
+  evidence_keywords: ["LEDGER_DB_URL"]
+alerts:
+  - labels: {alertname: KubePodCrashLooping, namespace: payments, pod: ledger-5d8f9c7b6w-q2w4z, container: ledger, severity: critical}
+    annotations: {summary: "Pod payments/ledger-5d8f9c7b6w-q2w4z is crash looping"}
+    expr: 'max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff",namespace="payments"}[5m]) >= 1'
+    fingerprint: 9a8b7c6d5e4f3a21
+    starts_offset_seconds: -300
+fixtures:
+  prometheus:
+    - match: 'kube_pod_container_status_restarts_total'
+      series:
+        - labels: {pod: ledger-5d8f9c7b6w-q2w4z}
+          values: [[0, 7]]
+  loki:
+    - match: 'app="ledger"'
+      lines:
+        - {offset: -420, pod: ledger-5d8f9c7b6w-q2w4z, line: "INFO starting ledger 3.2.1"}
+        - {offset: -419, pod: ledger-5d8f9c7b6w-q2w4z, line: "ERROR config: required environment variable LEDGER_DB_URL is not set"}
+        - {offset: -419, pod: ledger-5d8f9c7b6w-q2w4z, line: "Traceback (most recent call last): File \"/app/ledger/settings.py\", line 18, in <module> KeyError: 'LEDGER_DB_URL'"}
+  kubernetes:
+    events:
+      payments:
+        - {type: Warning, reason: BackOff, object: Pod/ledger-5d8f9c7b6w-q2w4z, message: "Back-off restarting failed container ledger", count: 7, offset: -60}
+    pod_details:
+      payments/ledger-5d8f9c7b6w-q2w4z:
+        name: ledger-5d8f9c7b6w-q2w4z
+        phase: Running
+        node: worker-2
+        restarts: 7
+        ready: false
+        owner: ledger-5d8f9c7b6w
+        containers:
+          - name: ledger
+            image: registry.example.com/ledger:3.2.1
+            ready: false
+            restarts: 7
+            state: {waiting: CrashLoopBackOff}
+            last_state: {terminated: Error, exit_code: 1}
+            limits: {cpu: 500m, memory: 512Mi}
+    rollouts:
+      payments/ledger:
+        - {revision: 21, replicaset: ledger-6f7e8d9c0b, images: ["registry.example.com/ledger:3.2.0"], replicas: 0, ready: 0, offset_minutes: -40320}
+        - {revision: 22, replicaset: ledger-5d8f9c7b6w, images: ["registry.example.com/ledger:3.2.1"], replicas: 2, ready: 0, offset_minutes: -12960}

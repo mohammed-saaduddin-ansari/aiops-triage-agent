@@ -1,0 +1,67 @@
+id: alert-storm-crashloop
+title: Alert storm from one bad image (18 notifications, 6 pods)
+description: >
+  recommender 0.19.0 crashes on start. Every pod fires KubePodCrashLooping and
+  Alertmanager re-sends each one. Correlation must collapse the storm into one
+  triage; the cause is the new image.
+expected:
+  cause_category: bad_deploy
+  evidence_keywords: ["nil map", "revision 8", "0.19.0"]
+  groups: 1
+alerts:
+  - &crash
+    labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-x2b4c, container: recommender, severity: warning}
+    annotations: {summary: "Pod ml/recommender-7c9d8f6b5d-x2b4c is crash looping"}
+    expr: 'max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff",namespace="ml"}[5m]) >= 1'
+    fingerprint: c0000000000000a1
+    starts_offset_seconds: -150
+    repeat: 3
+  - {<<: *crash, labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-d5g4f, container: recommender, severity: warning}, fingerprint: c0000000000000a2}
+  - {<<: *crash, labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-g5h6j, container: recommender, severity: warning}, fingerprint: c0000000000000a3}
+  - {<<: *crash, labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-j7k8l, container: recommender, severity: warning}, fingerprint: c0000000000000a4}
+  - {<<: *crash, labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-m9n2p, container: recommender, severity: warning}, fingerprint: c0000000000000a5}
+  - {<<: *crash, labels: {alertname: KubePodCrashLooping, namespace: ml, pod: recommender-7c9d8f6b5d-p6q2r, container: recommender, severity: warning}, fingerprint: c0000000000000a6}
+fixtures:
+  prometheus:
+    - match: 'kube_pod_container_status_restarts_total'
+      series:
+        - labels: {pod: recommender-7c9d8f6b5d-x2b4c}
+          values: [[0, 5]]
+        - labels: {pod: recommender-7c9d8f6b5d-d5g4f}
+          values: [[0, 5]]
+    - match: 'kube_pod_container_status_waiting_reason'
+      series:
+        - labels: {pod: recommender-7c9d8f6b5d-x2b4c, reason: CrashLoopBackOff}
+          values: [[-3600, 0], [-360, 0], [-240, 1], [0, 1]]
+  loki:
+    - match: 'app="recommender"'
+      lines:
+        - {offset: -330, pod: recommender-7c9d8f6b5d-x2b4c, line: "starting recommender version=0.19.0"}
+        - {offset: -329, pod: recommender-7c9d8f6b5d-x2b4c, line: "panic: assignment to entry in nil map goroutine 1 [running]: main.loadFeatureFlags() flags.go:57"}
+        - {offset: -100, pod: recommender-7c9d8f6b5d-g5h6j, line: "panic: assignment to entry in nil map goroutine 1 [running]: main.loadFeatureFlags() flags.go:57"}
+  kubernetes:
+    events:
+      ml:
+        - {type: Warning, reason: BackOff, object: Pod/recommender-7c9d8f6b5d-x2b4c, message: "Back-off restarting failed container recommender", count: 9, offset: -60}
+        - {type: Warning, reason: BackOff, object: Pod/recommender-7c9d8f6b5d-d5g4f, message: "Back-off restarting failed container recommender", count: 8, offset: -50}
+    pod_details:
+      ml/recommender-7c9d8f6b5d-x2b4c:
+        name: recommender-7c9d8f6b5d-x2b4c
+        phase: Running
+        node: worker-1
+        restarts: 5
+        ready: false
+        owner: recommender-7c9d8f6b5d
+        containers:
+          - name: recommender
+            image: registry.example.com/recommender:0.19.0
+            ready: false
+            restarts: 5
+            state: {waiting: CrashLoopBackOff, message: "back-off 2m40s restarting failed container"}
+            last_state: {terminated: Error, exit_code: 2}
+            limits: {cpu: "1", memory: 1Gi}
+        conditions: [{type: Ready, status: "False", reason: ContainersNotReady}]
+    rollouts:
+      ml/recommender:
+        - {revision: 7, replicaset: recommender-66b8f9d7c5, images: ["registry.example.com/recommender:0.18.4"], replicas: 0, ready: 0, offset_minutes: -30240}
+        - {revision: 8, replicaset: recommender-7c9d8f6b5d, images: ["registry.example.com/recommender:0.19.0"], replicas: 6, ready: 0, change_cause: "release 0.19.0", offset_minutes: -6}

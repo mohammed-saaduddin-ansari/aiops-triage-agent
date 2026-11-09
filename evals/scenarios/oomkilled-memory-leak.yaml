@@ -1,0 +1,50 @@
+id: oomkilled-memory-leak
+title: Memory leak ending in OOMKilled
+description: >
+  catalog's working set climbs steadily to its 2Gi limit and the container is
+  OOM-killed (exit 137). No recent deploy.
+expected:
+  cause_category: resource_exhaustion
+  evidence_keywords: ["OOMKilled", "OOM", "memory"]
+alerts:
+  - labels: {alertname: ContainerMemoryNearLimit, namespace: shop, pod: catalog-84c7d9b6f5-z9x8c, container: catalog, severity: warning}
+    annotations: {summary: "catalog memory above 90% of limit"}
+    expr: 'max by (pod) (container_memory_working_set_bytes{namespace="shop",pod=~"catalog-.*",container!=""}) / max by (pod) (kube_pod_container_resource_limits{namespace="shop",pod=~"catalog-.*",resource="memory"}) > 0.9'
+    fingerprint: 4e5f6a7b8c9d0e1f
+    starts_offset_seconds: -120
+fixtures:
+  prometheus:
+    - match: 'container_memory_working_set_bytes'
+      series:
+        - labels: {pod: catalog-84c7d9b6f5-z9x8c}
+          values: [[-3600, 0.58], [-3000, 0.66], [-2400, 0.73], [-1800, 0.81], [-1200, 0.88], [-600, 0.97], [-480, 0.31], [-240, 0.52], [0, 0.93]]
+  loki:
+    - match: 'app="catalog"'
+      lines:
+        - {offset: -500, pod: catalog-84c7d9b6f5-z9x8c, line: "WARN cache size 1.8GiB, evictions 0 (eviction disabled by config)"}
+  kubernetes:
+    events:
+      shop:
+        - {type: Warning, reason: OOMKilling, object: Pod/catalog-84c7d9b6f5-z9x8c, message: "Memory cgroup out of memory: Killed process 4242 (java) total-vm:3145728kB, anon-rss:2097152kB", offset: -485}
+        - {type: Warning, reason: BackOff, object: Pod/catalog-84c7d9b6f5-z9x8c, message: "Back-off restarting failed container catalog", offset: -470}
+    pod_details:
+      shop/catalog-84c7d9b6f5-z9x8c:
+        name: catalog-84c7d9b6f5-z9x8c
+        phase: Running
+        node: worker-4
+        restarts: 3
+        ready: true
+        owner: catalog-84c7d9b6f5
+        containers:
+          - name: catalog
+            image: registry.example.com/catalog:7.4.2
+            ready: true
+            restarts: 3
+            state: {running_since: "2026-01-15T09:52:00+00:00"}
+            last_state: {terminated: OOMKilled, exit_code: 137, finished_at: "2026-01-15T09:51:55+00:00"}
+            limits: {cpu: "2", memory: 2Gi}
+            requests: {cpu: "1", memory: 1Gi}
+    rollouts:
+      shop/catalog:
+        - {revision: 40, replicaset: catalog-73b6c8a5e4, images: ["registry.example.com/catalog:7.4.1"], replicas: 0, ready: 0, offset_minutes: -20160}
+        - {revision: 41, replicaset: catalog-84c7d9b6f5, images: ["registry.example.com/catalog:7.4.2"], replicas: 3, ready: 3, offset_minutes: -7200}

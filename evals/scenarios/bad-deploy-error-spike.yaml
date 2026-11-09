@@ -1,0 +1,43 @@
+id: bad-deploy-error-spike
+title: 5xx spike straight after a rollout
+description: >
+  cart v2.4.0 rolled out 12 minutes before HighErrorRate fired. Only the new
+  version returns 500s; logs show a TypeError in the discount code path.
+expected:
+  cause_category: bad_deploy
+  evidence_keywords: ["revision 14", "TypeError", "2.4.0"]
+alerts:
+  - labels: {alertname: HighErrorRate, namespace: shop, app: cart, severity: critical}
+    annotations:
+      summary: "cart 5xx ratio above 5% for 5m"
+      description: "11.8% of requests to cart are failing"
+    expr: 'sum(rate(http_requests_total{namespace="shop",app="cart",code=~"5.."}[5m])) / sum(rate(http_requests_total{namespace="shop",app="cart"}[5m])) > 0.05'
+    fingerprint: 6c1f0a9e3b2d4c11
+    starts_offset_seconds: -240
+fixtures:
+  prometheus:
+    - match: 'sum by \(version\)'
+      series:
+        - labels: {version: "2.3.9"}
+          values: [[-600, 0.002]]
+        - labels: {version: "2.4.0"}
+          values: [[-600, 0.121]]
+    - match: 'http_requests_total'
+      series:
+        - labels: {}
+          values: [[-3600, 0.003], [-2400, 0.002], [-1200, 0.004], [-720, 0.004], [-600, 0.051], [-480, 0.097], [-300, 0.118], [-120, 0.121], [0, 0.119]]
+  loki:
+    - match: 'app="cart"'
+      lines:
+        - {offset: -690, pod: cart-7f9c6d5b8d-k2l9p, line: "level=error msg=\"unhandled exception\" err=\"TypeError: Cannot read properties of undefined (reading 'currency') at applyDiscount (discount.js:212)\" version=2.4.0"}
+        - {offset: -560, pod: cart-7f9c6d5b8d-k2l9p, line: "level=error msg=\"POST /api/cart/checkout 500\" duration_ms=14 version=2.4.0"}
+        - {offset: -300, pod: cart-7f9c6d5b8d-v8m2x, line: "level=error msg=\"unhandled exception\" err=\"TypeError: Cannot read properties of undefined (reading 'currency') at applyDiscount (discount.js:212)\" version=2.4.0"}
+  kubernetes:
+    events:
+      shop:
+        - {type: Normal, reason: ScalingReplicaSet, object: Deployment/cart, message: "Scaled up replica set cart-7f9c6d5b8d to 3", offset: -720}
+        - {type: Normal, reason: ScalingReplicaSet, object: Deployment/cart, message: "Scaled down replica set cart-5b8c7d9f4c to 0", offset: -650}
+    rollouts:
+      shop/cart:
+        - {revision: 13, replicaset: cart-5b8c7d9f4c, images: ["registry.example.com/cart:2.3.9"], replicas: 0, ready: 0, change_cause: "release 2.3.9", offset_minutes: -8640}
+        - {revision: 14, replicaset: cart-7f9c6d5b8d, images: ["registry.example.com/cart:2.4.0"], replicas: 3, ready: 3, change_cause: "release 2.4.0 (discount engine rewrite)", offset_minutes: -12}
