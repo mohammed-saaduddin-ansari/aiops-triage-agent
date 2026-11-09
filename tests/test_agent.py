@@ -69,6 +69,9 @@ async def test_fake_llm_triage_completes_with_verified_evidence(settings: Settin
     assert result.verdict.evidence
     assert all(e.verified for e in result.verdict.evidence)
     assert all(e.query for e in result.verdict.evidence), "harness fills in queries"
+    queries = [c.input["query"] for c in result.tool_calls if c.name == "prometheus_query"]
+    assert len(queries) == 1, "runs the check from the top runbook only"
+    assert "sum by (version)" in queries[0]
 
     spans = {s.name for s in EXPORTER.get_finished_spans()}
     assert {"triage.run", "llm.call", "tool.runbook_lookup", "tool.k8s_rollout_history"} <= spans

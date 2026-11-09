@@ -34,6 +34,7 @@ from triage_agent.prompts import SUBMIT_VERDICT
 _ALERT_GROUP = re.compile(r"<alert_group[^>]*>\n(.*?)\n</alert_group>", re.S)
 _TOOL_OUTPUT_BODY = re.compile(r"<tool_output[^>]*>(.*?)</tool_output[^>]*>", re.S)
 _PROMQL_BLOCK = re.compile(r"```promql\n(.*?)\n```", re.S)
+_RUNBOOK_HEADER = re.compile(r"\n(?=## [^\n]*\(file: runbooks/)")
 _ERRORISH = re.compile(r"(?i)\b(error|exception|panic|fatal|5\d\d|failed|traceback)\b")
 
 
@@ -389,7 +390,8 @@ def _runbook_queries(messages: list[dict[str, Any]], ctx: dict[str, str]) -> lis
     for name, _args, body in _tool_results(messages).values():
         if name != "runbook_lookup":
             continue
-        top_runbook = body.split("\n## ")[0]  # follow only the best-matching runbook
+        # Follow only the best-matching runbook (the tool returns up to two).
+        top_runbook = _RUNBOOK_HEADER.split(body.strip())[0]
         for block in _PROMQL_BLOCK.findall(top_runbook):
             query = block.strip()
             for key in ("namespace", "workload", "pod", "node", "instance"):
