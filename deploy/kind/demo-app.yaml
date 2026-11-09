@@ -1,0 +1,100 @@
+# The breakable demo service. Its code comes from deploy/demo-app/app.py via the
+# demo-app-code ConfigMap (created by up.sh), so no image build is needed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: demo
+  labels: {app: demo-app}
+  annotations:
+    kubernetes.io/change-cause: "initial deploy"
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: demo-app}
+  template:
+    metadata:
+      labels: {app: demo-app}
+    spec:
+      containers:
+        - name: demo-app
+          image: python:3.12-slim
+          command: ["python", "/app/app.py"]
+          env:
+            - {name: MODE, value: healthy}
+            - {name: LOKI_URL, value: "http://loki.monitoring.svc:3100"}
+            - {name: APP_NAME, value: demo-app}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {name: http, containerPort: 8081}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}  # low on purpose: MODE=leak reaches it in seconds
+          volumeMounts:
+            - {name: code, mountPath: /app}
+      volumes:
+        - name: code
+          configMap: {name: demo-app-code}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app
+  namespace: demo
+  labels: {app: demo-app}
+spec:
+  selector: {app: demo-app}
+  ports:
+    - {name: http, port: 8081, targetPort: http}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-app
+  namespace: demo
+spec:
+  selector:
+    matchLabels: {app: demo-app}
+  targetLabels: [app]
+  endpoints:
+    - {port: http, interval: 15s}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-app
+  namespace: demo
+spec:
+  groups:
+    - name: demo-app
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            sum by (namespace, app) (rate(http_requests_total{namespace="demo", code=~"5.."}[1m]))
+              / sum by (namespace, app) (rate(http_requests_total{namespace="demo"}[1m])) > 0.05
+          for: 1m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $labels.app }} 5xx ratio above 5% for 1m"
+        # kube-prometheus-stack ships KubePodCrashLooping with for: 15m. This faster
+        # copy exists only so the demo fires in about a minute.
+        - alert: KubePodCrashLooping
+          expr: max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", namespace="demo"}[2m]) >= 1
+          for: 1m
+          labels: {severity: warning}
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+        - alert: ContainerMemoryNearLimit
+          expr: |
+            max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="demo", container!=""})
+              / max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="demo", resource="memory"}) > 0.9
+          for: 30s
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $labels.pod }} memory above 90% of its limit"

@@ -1,0 +1,74 @@
+# Local end-to-end stack: demo app -> Prometheus -> Alertmanager -> triage agent,
+# with logs in Loki. Grafana is optional:  docker compose --profile grafana up
+#
+#   make compose-up                      # start (offline FakeLLM unless a key is set)
+#   curl -X POST localhost:8081/mode/errors   # break the demo app
+#   curl localhost:8080/triages          # ~2-3 minutes later: the verdict
+#   (host ports are overridable: TRIAGE_PORT, DEMO_APP_PORT)
+name: aiops-triage
+
+services:
+  triage-agent:
+    build: .
+    ports: ["${TRIAGE_PORT:-8080}:8080"]
+    environment:
+      TRIAGE_LLM_PROVIDER: ${TRIAGE_LLM_PROVIDER:-fake}
+      TRIAGE_LLM_MODEL: ${TRIAGE_LLM_MODEL:-claude-opus-5-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TRIAGE_PROMETHEUS_URL: http://prometheus:9090
+      TRIAGE_PROMETHEUS_EXTERNAL_URL: http://localhost:9090
+      TRIAGE_LOKI_URL: http://loki:3100
+      TRIAGE_KUBERNETES_MODE: "off"
+      TRIAGE_DEBOUNCE_SECONDS: "10"
+      TRIAGE_APPROVAL_TOKEN: ${TRIAGE_APPROVAL_TOKEN:-local-demo-token}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - triage-data:/var/lib/triage
+    depends_on: [prometheus, loki]
+
+  demo-app:
+    image: python:3.12-slim
+    command: ["python", "/app/app.py"]
+    ports: ["${DEMO_APP_PORT:-8081}:8081"]
+    environment:
+      MODE: healthy
+      LOKI_URL: http://loki:3100
+      POD_NAMESPACE: demo
+      APP_NAME: demo-app
+      HOSTNAME: demo-app-6f8b9c7d5f-x2k4p
+    volumes:
+      - ./deploy/demo-app/app.py:/app/app.py:ro
+    depends_on: [loki]
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/compose/rules.yml:/etc/prometheus/rules.yml:ro
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    ports: ["9093:9093"]
+    volumes:
+      - ./deploy/compose/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  loki:
+    image: grafana/loki:3.3.2
+    ports: ["3100:3100"]
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./deploy/compose/loki.yaml:/etc/loki/loki.yaml:ro
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: [grafana]
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/compose/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+
+volumes:
+  triage-data:

@@ -1,0 +1,16 @@
+route:
+  receiver: triage-agent
+  group_by: [alertname, namespace, app]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+
+receivers:
+  - name: triage-agent
+    webhook_configs:
+      - url: http://triage-agent:8080/webhook/alertmanager
+        send_resolved: true
+        # In production, set TRIAGE_WEBHOOK_TOKEN and add:
+        # http_config:
+        #   authorization:
+        #     credentials_file: /etc/alertmanager/triage-token

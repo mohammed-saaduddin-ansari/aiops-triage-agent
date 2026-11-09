@@ -1,0 +1,27 @@
+fullnameOverride: kps
+grafana:
+  enabled: false
+prometheus:
+  prometheusSpec:
+    # Pick up the demo's ServiceMonitor and PrometheusRule without release labels.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    evaluationInterval: 15s
+    scrapeInterval: 15s
+alertmanager:
+  config:
+    route:
+      receiver: triage-agent
+      group_by: [alertname, namespace]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      routes:
+        - receiver: "null"
+          matchers: ['alertname =~ "Watchdog|InfoInhibitor"']
+    receivers:
+      - name: "null"
+      - name: triage-agent
+        webhook_configs:
+          - url: http://triage-agent.triage.svc:8080/webhook/alertmanager
+            send_resolved: true

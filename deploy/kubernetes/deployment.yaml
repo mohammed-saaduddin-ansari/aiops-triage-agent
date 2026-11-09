@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-agent
+  namespace: triage
+  labels: {app: triage-agent}
+spec:
+  replicas: 1  # state (runs, proposals) is in memory; see docs/DESIGN-DECISIONS.md
+  selector:
+    matchLabels: {app: triage-agent}
+  template:
+    metadata:
+      labels: {app: triage-agent}
+    spec:
+      serviceAccountName: triage-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: triage-agent
+          image: aiops-triage-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+          envFrom:
+            - configMapRef: {name: triage-agent}
+            # Optional: ANTHROPIC_API_KEY, TRIAGE_APPROVAL_TOKEN, TRIAGE_WEBHOOK_TOKEN.
+            - secretRef: {name: triage-agent, optional: true}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/triage}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: triage-agent
+  namespace: triage
+  labels: {app: triage-agent}
+spec:
+  selector: {app: triage-agent}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
