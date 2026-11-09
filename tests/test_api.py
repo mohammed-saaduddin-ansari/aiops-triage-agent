@@ -46,6 +46,9 @@ def test_webhook_to_verdict_to_approval(settings: Settings) -> None:
         assert run["result"]["verdict"]["cause_category"] == "bad_deploy"
         proposal_id = run["proposal_ids"][0]
         assert client.get(f"/proposals/{proposal_id}").json()["status"] == "pending_approval"
+        pending = client.get("/proposals", params={"status": "pending_approval"}).json()
+        assert [p["id"] for p in pending] == [proposal_id]
+        assert client.get("/proposals", params={"status": "approved"}).json() == []
 
         decision = {"approver": "on-call engineer", "comment": "rolling back"}
         assert client.post(f"/proposals/{proposal_id}/approve", json=decision).status_code == 401
