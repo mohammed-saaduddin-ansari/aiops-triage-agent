@@ -13,8 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Alertmanager webhook (payload version 4)
 # --------------------------------------------------------------------------- #
 
-_POD_HASH_SUFFIX = re.compile(r"-[a-z0-9]{8,10}-[a-z0-9]{5}$")  # deployment pods
-_POD_ORDINAL_OR_JOB_SUFFIX = re.compile(r"-[a-z0-9]{5}$")  # daemonset / job pods
+# Kubernetes generates name suffixes from a vowel-free alphabet (rand.SafeEncodeString),
+# so "-exporter-" in "node-exporter-x2x9k" is never mistaken for a ReplicaSet hash.
+_SAFE = "[bcdfghjklmnpqrstvwxz2456789]"
+_POD_HASH_SUFFIX = re.compile(rf"-{_SAFE}{{6,10}}-{_SAFE}{{5}}$")  # Deployment pods
+_POD_ORDINAL_OR_JOB_SUFFIX = re.compile(rf"-{_SAFE}{{5}}$")  # DaemonSet / Job pods
 
 
 def workload_from_pod(pod: str) -> str:

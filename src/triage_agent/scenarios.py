@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
@@ -61,6 +62,11 @@ def _alert(raw: dict[str, Any]) -> Alert:
     data = dict(raw)
     offset = data.pop("starts_offset_seconds", -180)
     data.setdefault("startsAt", at(offset).isoformat())
+    expr = data.pop("expr", None)
+    if expr and not data.get("generatorURL"):
+        data["generatorURL"] = (
+            f"http://prometheus:9090/graph?g0.expr={quote(expr, safe='')}&g0.tab=1"
+        )
     return Alert.model_validate(data)
 
 

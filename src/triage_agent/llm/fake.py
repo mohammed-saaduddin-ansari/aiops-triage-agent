@@ -389,7 +389,8 @@ def _runbook_queries(messages: list[dict[str, Any]], ctx: dict[str, str]) -> lis
     for name, _args, body in _tool_results(messages).values():
         if name != "runbook_lookup":
             continue
-        for block in _PROMQL_BLOCK.findall(body):
+        top_runbook = body.split("\n## ")[0]  # follow only the best-matching runbook
+        for block in _PROMQL_BLOCK.findall(top_runbook):
             query = block.strip()
             for key in ("namespace", "workload", "pod", "node", "instance"):
                 query = query.replace("{{" + key + "}}", ctx.get(key, ""))
