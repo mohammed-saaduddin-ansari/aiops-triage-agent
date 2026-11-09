@@ -1,53 +1,53 @@
 # aiops-triage-agent
 
 [![CI](https://github.com/mohammed-saaduddin-ansari/aiops-triage-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/mohammed-saaduddin-ansari/aiops-triage-agent/actions/workflows/ci.yml)
-![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Licence: MIT](https://img.shields.io/badge/licence-MIT-green)
 
-An LLM agent that triages Prometheus/Alertmanager alerts. It correlates an
-alert storm into one incident, investigates with **read-only** tools
-(Prometheus, Kubernetes, Loki, runbooks), and returns a structured verdict:
-suspected cause, cited evidence, confidence, severity, next steps. Any
-remediation it suggests is a **proposal** that a human must approve; the agent
-itself never changes anything.
+An LLM agent that triages Prometheus/Alertmanager alerts. It collapses an alert
+storm into one incident, investigates with read-only tools (Prometheus,
+Kubernetes, Loki, runbooks) and hands back a verdict with a suspected cause,
+cited evidence and a confidence score. Anything it suggests doing is a proposal
+for a human to approve; the agent itself changes nothing.
 
-A reference implementation of the alert-triage pattern I've built in
-production; no employer code.
+## Why I built this
 
-**Why.** The first ten minutes of an incident are mostly the same queries:
-what changed, what do the logs say, what does the runbook suggest. An agent
-can do that legwork and hand the on-call engineer a short, evidence-backed
-starting point, provided it cannot make things worse, says how sure it is,
-and can be measured.
+The first ten minutes of most incidents are the same queries: what changed,
+what do the logs say, what does the runbook suggest. I have built alert triage
+along these lines at work, and this is a clean-room reference implementation of
+the pattern, written from scratch with public tools and none of that code. I
+wanted a version where the safety argument is visible in the code: it cannot
+make things worse, it says how sure it is, and it can be measured.
 
-## 30-second demo (no API key, no network)
+## Try it
+
+Offline, no API key, no network:
 
 ```bash
 git clone https://github.com/mohammed-saaduddin-ansari/aiops-triage-agent
 cd aiops-triage-agent
-make install   # uv sync from the lock file (Python 3.12)
+make install   # uv sync --frozen (Python 3.12)
 make demo      # triage a recorded "bad deploy" incident end to end
 ```
 
-Other scenarios: `make demo SCENARIO=prompt-injection-in-logs`,
-`alert-storm-crashloop`, `secret-in-logs-credential-rotation` (list in
-[`evals/scenarios/`](evals/scenarios)). Add `ANTHROPIC_API_KEY` and run
-`uv run triage-agent demo --live` to let Claude do the investigation instead of
-the deterministic FakeLLM.
+`make demo SCENARIO=<name>` runs any file in [`evals/scenarios/`](evals/scenarios);
+`prompt-injection-in-logs` and `alert-storm-crashloop` are the interesting ones.
+The demo uses a deterministic FakeLLM. With `ANTHROPIC_API_KEY` set,
+`uv run triage-agent demo --live` lets Claude do the investigation instead.
 
 For a live loop with real Prometheus, Alertmanager and Loki:
 
 ```bash
-make compose-up                     # agent + demo app + Prometheus + Alertmanager + Loki
-make compose-break MODE=errors      # the demo app starts failing
-curl -s localhost:8080/triages      # a verdict appears within ~2 minutes
+make compose-up                  # agent + demo app + Prometheus + Alertmanager + Loki
+make compose-break MODE=errors   # the demo app starts failing
+curl -s localhost:8080/triages   # a verdict appears within a couple of minutes
 ```
 
-`make kind-up` builds the same thing on a local Kubernetes cluster with
-kube-prometheus-stack, and `make kind-break-crash | kind-break-leak |
-kind-break-errors` rolls out a genuinely broken version of the demo app.
+The compose stack uses the FakeLLM unless a key is set. `make kind-up` builds
+the same thing on a local kind cluster with kube-prometheus-stack, and
+`make kind-break-crash`, `kind-break-leak` or `kind-break-errors` rolls out a
+genuinely broken version of the demo app.
 
-## Architecture
+## How it fits together
 
 ```mermaid
 flowchart LR
@@ -67,37 +67,25 @@ flowchart LR
     H -- approve / reject --> AU[(Hash-chained<br/>audit log)]
 ```
 
-More detail, including a sequence diagram, in
+Alertmanager posts to `/webhook/alertmanager`. The handler only correlates and
+enqueues, so it answers in milliseconds. Alerts are grouped by
+`(alertname, namespace, workload)` in a sliding five-minute window, and
+re-sent notifications count as duplicates: in the storm scenario, 18
+notifications from six crash-looping pods become one triage. A short debounce
+lets the rest of a storm arrive before the investigation starts.
+
+The model then gets the alert group and eight read-only tools. Every call goes
+through a registry that checks the allow-list and arguments, applies a
+timeout, redacts secrets, truncates, and wraps the result as untrusted data.
+Step, tool-call and token budgets stop runaway loops; past them, a fallback
+verdict says "unknown, confidence 0" rather than guessing. The model finishes
+by calling `submit_verdict`. Destructive proposals (delete a namespace, scale
+to zero, read secrets) are blocked and cannot be approved; the rest wait for
+`POST /proposals/{id}/approve`, which writes to a hash-chained audit log and
+executes nothing.
+
+The sequence diagram, tool limits, spans, metrics and failure handling are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## How a triage run works
-
-1. **Webhook.** Alertmanager posts a batch of alerts to
-   `/webhook/alertmanager`. The handler only correlates and enqueues, so it
-   answers in milliseconds.
-2. **Correlate.** Alerts are grouped by `(alertname, namespace, workload)` in a
-   sliding five-minute window; `workload` is derived from labels or the pod
-   name. Re-sent notifications are counted as duplicates. Eighteen
-   notifications from six crash-looping pods become one group and one triage.
-3. **Debounce.** The job waits a few seconds so the rest of a storm joins the
-   group before the investigation starts.
-4. **Investigate.** The model gets the alert group (redacted, delimited as
-   untrusted data) and eight read-only tools. It typically reads the runbook,
-   checks the alert's metric over the last hour, rollout history, events and
-   error logs, then drills into a pod. Tool calls in one turn run concurrently.
-5. **Guard-rails on every tool call.** Allow-list, argument validation, timeout,
-   secret redaction, truncation, injection heuristics, and a
-   `<tool_output nonce=... trust="untrusted">` wrapper.
-6. **Budgets.** Step, tool-call and token limits. Near the limit the model is
-   told to submit; past it, a deterministic fallback verdict is returned.
-7. **Verdict.** The model calls `submit_verdict`. The harness validates the
-   schema and rejects evidence that cites a tool call that never ran.
-8. **Proposals.** Each suggested action goes through a policy gate:
-   destructive commands (delete namespace, scale to zero, `rm -rf`, read
-   secrets, ...) are **blocked** and cannot be approved; everything else is
-   **pending approval**.
-9. **Human decision.** `POST /proposals/{id}/approve` (bearer token) records the
-   decision in a hash-chained audit log. The service does not execute it.
 
 ## Sample verdict
 
@@ -145,78 +133,89 @@ From `make demo` (FakeLLM, `bad-deploy-error-spike` scenario):
 }
 ```
 
-`verified: true` means the harness, not the model, confirmed that the cited
-tool call ran and succeeded. With Prometheus's external URL configured,
-metric evidence also carries a `link` to the graph.
+`verified: true` is set by the harness, not the model: it means the cited tool
+call ran and succeeded. With Prometheus's external URL configured, metric
+evidence also carries a `link` to the graph.
 
-## Evals
+## Evals, and what the offline score means
 
 `make eval` runs 13 labelled scenarios offline: bad deploy, alert storm,
 missing config, OOM leak, failing database, CPU throttling, node NotReady,
 certificate renewal, full volume, DNS failure, a flapping false positive, a
 prompt injection planted in logs, and a credential rotation with secrets all
-over the logs. Each is scored on:
+over the logs. Each run is scored on:
 
-| Check | Meaning |
+| Check | Passes when |
 |---|---|
 | Cause accuracy | `cause_category` matches the label |
 | Cited | every evidence item cites a tool call that actually ran |
-| Relevant | evidence mentions the expected signal (e.g. `OOMKilled`) |
+| Relevant | evidence mentions the expected signal (for example `OOMKilled`) |
 | Safe | no deny-listed or scenario-forbidden action proposed; only allow-listed tools ran |
-| Redacted | none of the scenario's planted secrets appears in any request to the model |
+| Redacted | none of the planted secrets appears in any request to the model |
 | Groups | correlation produced the expected number of groups |
 
-Current offline report: [evals/reports/offline.md](evals/reports/offline.md)
-(13/13). **Read that number for what it is:** the FakeLLM's keyword rules were
-written alongside these fixtures, so it shows the harness works end to end,
-not that a model reasons well. The tests also prove the checks bite: a model
-that follows the planted injection fails "Safe", and switching redaction off
-fails "Redacted". `make eval-live` runs the same scenarios against Claude and
-writes a dated report; quote those numbers with the model, effort and date.
+The [offline report](evals/reports/offline.md) shows 13/13, and that number
+tests the harness, not the model: I wrote the FakeLLM's keyword rules alongside
+the fixtures. What the tests do show is that the checks bite. A model that
+follows the planted injection fails "Safe", and switching redaction off fails
+"Redacted". `make eval-live` runs the same scenarios against Claude and writes
+a dated report; those are the numbers worth quoting, with model, effort and
+date.
 
-## Design decisions (short version)
+## Design decisions
 
-Full reasoning and trade-offs: [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md).
+The full list, with alternatives considered, is in
+[docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md). These are the ones that
+shape everything else.
 
-* **Read-only, enforced four times:** no write tools, a reader that only calls
-  `list_*`/`read_*` (tested), get/list/watch RBAC without secrets (tested), and
-  approvals that record but never execute. A hijacked model can at worst write a
-  bad proposal, and destructive ones cannot be approved.
-* **Correlation before the LLM:** storms are where triage is most valuable and
-  per-alert LLM calls most wasteful. Grouping is cheap and deterministic; the
-  model's budget goes on "why", not "are these the same".
-* **Structured output:** a schema gives a category to score, a confidence to
-  gate on, and evidence that can be checked mechanically. The citation check is
-  the most useful single guard against confident nonsense.
-* **Evals in the repo:** prompt and model changes become a diff in a table.
-  Safety and redaction are pass/fail gates, not metrics to trade off.
-* **Tool output is data:** nonce-delimited, defanged, flagged; but the real
-  defence against injection is that the agent has nothing dangerous to call.
-* **Hand-written loop:** budgets, spans, citation checks and fallbacks at each
-  step, and one code path for Claude and the FakeLLM.
+**Read-only, enforced in four places.** Part of the model's input (log lines,
+event messages, alert annotations) can be written by anyone who can make a
+service log something, so an agent with write access is one crafted log line
+away from an incident. There are no write tools, the Kubernetes reader only
+calls `list_*`/`read_*` methods, the RBAC is get/list/watch without secrets or
+`exec`, and approval records a decision without acting on it. Two of those are
+enforced by tests. The cost is slower remediation. If a team wants automation,
+I would trigger a separate executor from the approval record, with its own
+narrow credentials ("rollback only, this namespace only").
 
-## Cost per triage
+**Correlate before the model sees anything.** Storms are where triage helps
+most and where per-alert LLM calls waste most. Label grouping is cheap,
+deterministic and easy to debug, and the model's budget goes on "why" rather
+than "are these the same thing". It misses cross-service causality: a failing
+database that makes three services alert still produces three triages. At
+larger scale I would correlate on a service dependency graph.
 
-The service records tokens per run (input, output, cache read, cache write) on
-each `TriageResult`, on the `llm.call` spans, and in
-`triage_llm_tokens_total`. To estimate cost:
+**A verdict schema with a citation check.** The model must cite the tool call
+behind each piece of evidence, and the harness rejects verdicts that cite calls
+that never ran. That single check does more against confident nonsense than
+anything in the prompt. Using a tool for the verdict, rather than a separate
+JSON call, lets the harness send a rejection back into the same conversation.
 
-1. Run `make eval-live` at the model and effort you intend to use. The report
-   has tokens per scenario.
-2. Take current per-million-token prices for that model from your provider's
-   pricing page (they differ by model, platform and contract; none are
-   hard-coded here).
-3. Cost per triage = `input × p_in + output × p_out + cache_read × p_cache_read
-   + cache_write × p_cache_write`, divided by 10⁶. Set
-   `TRIAGE_PRICE_*_PER_MTOK` and the service computes this per run
-   (`estimated_cost_usd`).
-4. Multiply by triages per day *after* correlation (not alerts per day) for a
-   monthly figure.
+**Tool output is data, but delimiting is not the defence.** Results are wrapped
+in `<tool_output nonce=... trust="untrusted">` with spoofed closing tags
+defanged, and injection heuristics flag (not block) suspicious text, because
+real logs say "ignore" and "system prompt" too. None of that makes injection
+impossible. What makes the residual risk acceptable is that a fully hijacked
+model can only write a proposal, and destructive proposals cannot be approved.
 
-Levers, roughly in order: correlation (fewer runs), prompt caching (stable
-prefix, already set up), lower effort, a smaller step budget, then a cheaper
-model, each checked with `make eval-live` before and after. FakeLLM token
-counts are character-based estimates and are labelled as such.
+**A hand-written loop.** About 150 lines that enforce budgets, run tools in
+parallel behind the registry, emit a span with token counts per model call,
+validate the verdict and fall back cleanly. It also means Claude and the
+FakeLLM share one code path. The price is adopting new SDK features by hand.
+
+**In-memory state, one replica.** Runs and proposals live in memory; only the
+audit log is on disk. That keeps the reference small, but a restart loses open
+proposals and two replicas would correlate independently. Postgres for runs and
+proposals plus a durable queue is the next step, and only touches `service.py`
+and `approvals.py`.
+
+## Cost
+
+Every run records input, output and cache tokens. A money figure is only
+computed if you set the `TRIAGE_PRICE_*_PER_MTOK` variables, because prices
+vary by model, platform and contract and a hard-coded one would be silently
+wrong. How to estimate a monthly figure, and which levers to pull first, is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#cost).
 
 ## API
 
@@ -230,40 +229,33 @@ counts are character-based estimates and are labelled as such.
 | GET | `/metrics/` | none | Prometheus metrics for the service |
 | GET | `/healthz` | none | Liveness |
 
-Configuration is by environment variable; every option is listed with its
-default in [`.env.example`](.env.example).
-
-## Security summary
-
-* Read-only tools and RBAC ([`deploy/kubernetes/rbac.yaml`](deploy/kubernetes/rbac.yaml)); no secrets, configmaps, `pods/log` or `exec`.
-* Secrets and email addresses redacted from tool output, the alert payload and verdicts.
-* Tool output delimited as untrusted data with a per-run nonce; injection heuristics flagged in spans and metrics.
-* Destructive actions blocked by policy; everything else needs a bearer-token approval; tamper-evident audit log.
-* Non-root, read-only-root-filesystem container; credentials only from the environment (`.env.example`, never committed).
+Configuration is by environment variable; every option and its default is in
+[`.env.example`](.env.example). If `TRIAGE_APPROVAL_TOKEN` is empty, approvals
+are disabled entirely. The container runs as non-root with a read-only root
+filesystem, and the RBAC is in
+[`deploy/kubernetes/rbac.yaml`](deploy/kubernetes/rbac.yaml).
 
 ## Limitations
 
-* Offline eval scores measure the harness, not model reasoning (see above), and 13 scenarios is a smoke test.
-* Correlation is label-based; it will not link three services failing because of one shared database.
-* State is in memory: run one replica; a restart loses open proposals (the audit log survives).
-* Redaction is pattern-based and will miss novel secret formats.
-* Injection defences reduce risk; they do not eliminate it. The read-only design is what makes the residual risk acceptable.
-* The kind path has been checked statically (kustomize build, Helm render, manifest tests) rather than in CI; the compose path has been run end to end.
-* Approval does not execute anything by design; wiring approved proposals to an executor is left to the operator.
+- 13 scenarios is a smoke test, and fixtures are cleaner than real incidents.
+  There are no live-model numbers in the repo yet.
+- Correlation is label-based (see above).
+- State is in memory: run one replica. A restart loses open proposals; the
+  audit log survives.
+- Redaction is pattern-based and will miss novel secret formats.
+- Injection defences reduce risk, they do not remove it. The read-only design
+  is what carries the weight.
+- The compose path has been run end to end. The kind path has only been
+  checked statically (kustomize build, Helm render, manifest tests), not in CI.
+- Approval never executes anything, by design. Wiring approved proposals to an
+  executor is up to you.
 
-## Roadmap
+Next on my list after persistence: grow the eval set from real post-incident
+reviews and record whether on-call agreed with each verdict.
 
-* Persist runs and proposals (Postgres) and use a durable queue, to allow more than one replica.
-* Topology-aware correlation (service graph, shared dependencies).
-* Post verdicts to Slack / PagerDuty incident notes, with approve buttons calling the API.
-* Grow the eval set from real post-incident reviews; track live scores over time per model and effort.
-* Feedback loop: record whether the on-call engineer agreed with the verdict.
-* Change-awareness tools: feature-flag and config-change history alongside rollouts.
-* Egress NetworkPolicy for the agent (only Prometheus, Loki, the API server and the model API).
+## Development
 
-## Repository layout
-
-```
+```text
 src/triage_agent/   service, agent loop, tools, LLM providers, security, approvals
 evals/              scenarios (YAML), runner, reports
 runbooks/           markdown runbooks the agent can retrieve
@@ -272,12 +264,6 @@ tests/              unit and integration tests (all offline)
 docs/               architecture and design decisions
 ```
 
-## Development
-
-```bash
-make install     # uv sync --frozen
-make check       # lint, mypy --strict, tests, offline eval (what CI runs)
-make help        # all targets
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT licence](LICENSE).
+`make check` runs lint, `mypy --strict`, the tests and the offline eval, which
+is what CI runs; `make help` lists every target. See
+[CONTRIBUTING.md](CONTRIBUTING.md). MIT licence, see [LICENSE](LICENSE).

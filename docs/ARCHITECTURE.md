@@ -205,3 +205,26 @@ decisions.
 | Provider error after SDK retries | `error` fallback; the run is recorded, the worker keeps going |
 | Refusal | `refused` fallback (server-side fallback models are requested where supported) |
 | Worker exception | Logged, run marked failed, audit entry written, worker continues |
+
+## Cost
+
+Tokens are recorded per run (input, output, cache read, cache write) on each
+`TriageResult`, on the `llm.call` spans and in `triage_llm_tokens_total`. To
+estimate cost:
+
+1. Run `make eval-live` at the model and effort you intend to use. The report
+   has tokens per scenario.
+2. Take current per-million-token prices for that model from your provider's
+   pricing page (they differ by model, platform and contract; none are
+   hard-coded here).
+3. Cost per triage = `input × p_in + output × p_out + cache_read × p_cache_read
+   + cache_write × p_cache_write`, divided by 10⁶. Set
+   `TRIAGE_PRICE_*_PER_MTOK` and the service computes this per run
+   (`estimated_cost_usd`).
+4. Multiply by triages per day *after* correlation (not alerts per day) for a
+   monthly figure.
+
+Levers, roughly in order: correlation (fewer runs), prompt caching (stable
+prefix, already set up), lower effort, a smaller step budget, then a cheaper
+model, each checked with `make eval-live` before and after. FakeLLM token
+counts are character-based estimates and are labelled as such.
